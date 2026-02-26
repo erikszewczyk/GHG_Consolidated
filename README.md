@@ -1,4 +1,4 @@
-# Global GHG Emissions — Interactive Sankey
+# Global GHG Emissions — Interactive Sankey Diagram
 
 An interactive flow diagram visualizing approximately **56 GtCO₂e** of annual global greenhouse gas emissions (2024 estimate), broken down by gas type, emitting sector, electricity generation source, and end-use activity.
 
