@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Global GHG Emissions — Interactive Sankey</title>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <script src="ghg_data.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #f9f9f9; font-family: Arial, sans-serif; }
+    #chart { width: 100vw; height: 100vh; }
+
+    /* ── info card ──────────────────────────────────────────────────────────── */
+    #info-card {
+      display: none;
+      position: fixed;
+      top: 72px;
+      right: 16px;
+      width: 340px;
+      max-height: calc(100vh - 116px);
+      overflow-y: auto;
+      background: #fff;
+      border: 1px solid #d0d0d0;
+      border-radius: 10px;
+      box-shadow: 0 6px 28px rgba(0,0,0,0.16);
+      z-index: 1000;
+      font-size: 12.5px;
+      line-height: 1.55;
+    }
+    #ic-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding: 13px 13px 9px;
+      border-bottom: 1px solid #eee;
+    }
+    #ic-title {
+      font-size: 13.5px;
+      font-weight: bold;
+      color: #111;
+      flex: 1;
+      padding-right: 8px;
+    }
+    #ic-close {
+      background: none;
+      border: none;
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      color: #999;
+      padding: 0;
+      flex-shrink: 0;
+    }
+    #ic-close:hover { color: #333; }
+    #ic-body { padding: 11px 13px 14px; }
+    .ic-metric {
+      background: #f2f5f8;
+      border-radius: 6px;
+      padding: 8px 11px;
+      margin-bottom: 10px;
+    }
+    .ic-metric strong { font-size: 15px; color: #111; }
+    .ic-pct { color: #666; font-size: 12px; margin-left: 6px; }
+    .ic-section { margin-bottom: 8px; color: #333; }
+    .ic-label { font-weight: 600; color: #111; }
+    .ic-source {
+      color: #999;
+      font-size: 11px;
+      font-style: italic;
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid #eee;
+    }
+
+    /* ── disclaimer bar ─────────────────────────────────────────────────────── */
+    #disclaimer {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      padding: 5px 20px;
+      background: rgba(249,249,249,0.93);
+      border-top: 1px solid #ddd;
+      font-size: 11px;
+      color: #777;
+      text-align: center;
+      z-index: 999;
+      line-height: 1.4;
+    }
+    #disclaimer a {
+      color: #4878cf;
+      text-decoration: none;
+    }
+    #disclaimer a:hover { text-decoration: underline; }
+
+    /* ── hint pill ──────────────────────────────────────────────────────────── */
+    #hint {
+      position: fixed;
+      bottom: 34px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.52);
+      color: #fff;
+      font-size: 12px;
+      padding: 5px 16px;
+      border-radius: 20px;
+      pointer-events: none;
+      transition: opacity 0.3s;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+
+<div id="chart"></div>
+
+<div id="info-card">
+  <div id="ic-header">
+    <span id="ic-title"></span>
+    <button id="ic-close" title="Close">&times;</button>
+  </div>
+  <div id="ic-body"></div>
+</div>
+
+<div id="disclaimer">
+  Illustrative 2024 estimates &mdash; sector-level uncertainty ±10&ndash;20% &nbsp;&bull;&nbsp;
+  Excludes land-use change &amp; forestry (LULUCF) &nbsp;&bull;&nbsp;
+  GWP<sub>100</sub> from IPCC AR6 &nbsp;&bull;&nbsp;
+  <a href="README.md" target="_blank">See README.md for full methodology, data sources &amp; limitations</a>
+</div>
+
+<div id="hint">Click any node or flow to see details</div>
+
+<script>
+// ── Semantic colour palette ────────────────────────────────────────────────────
+//
+// Colors are assigned to communicate meaning:
+//   L1 Gas types  — each gas has a distinct, memorable hue
+//   L2 Sectors    — intuitive sector associations (red=energy, orange=transport, etc.)
+//   L3 Generation — emission-intensity basis; coal near-black, non-fossil dark green
+//   L4 End-uses   — shaded variants of their parent L2 sector color;
+//                   electricity end-uses use a shared teal/blue family
+
+const NODE_COLOR = {
+  // ── L1: Gas types ─────────────────────────────────────────────────────────
+  0:  '#c0392b',  // CO₂        — tomato red      (fossil combustion)
+  1:  '#2980b9',  // CH₄        — sky blue        (gas, atmosphere)
+  2:  '#27ae60',  // N₂O        — emerald green   (agricultural nitrogen)
+  3:  '#8e44ad',  // F-gases    — amethyst purple  (synthetic industrial)
+
+  // ── L2: Sectors ───────────────────────────────────────────────────────────
+  4:  '#922b21',  // Power & Heat  — dark red       (fire, energy generation)
+  5:  '#d35400',  // Transport     — burnt orange   (vehicles, roads)
+  6:  '#5d6d7e',  // Industry      — slate gray     (manufacturing)
+  7:  '#9c5a27',  // Buildings     — terra cotta    (built environment)
+  8:  '#1c2833',  // Fuel Supply   — dark navy      (underground fossil fuels)
+  9:  '#1d8348',  // Agriculture   — forest green   (crops, livestock)
+  10: '#7d6608',  // Waste         — dark olive     (organic decomposition)
+
+  // ── L3: Electricity generation (emission-intensity basis) ─────────────────
+  11: '#1a1a1a',  // Coal power        — near black   (coal)
+  12: '#7f8c8d',  // Gas power         — steel gray   (natural gas)
+  13: '#6e3b20',  // Oil & other       — dark brown   (oil, terminal)
+  14: '#b7950b',  // District heat     — gold         (heat, terminal)
+  15: '#196f3d',  // Non-fossil elec.  — forest green (renewables + nuclear)
+
+  // ── L4: End-uses — Transport (burnt orange family) ─────────────────────────
+  16: '#c84b00',  // Road transport           — deep orange
+  17: '#e67e22',  // Aviation                 — orange
+  18: '#d4860c',  // Shipping                 — amber orange
+  19: '#f0a030',  // Rail & other             — light amber
+
+  // ── L4: End-uses — Industry (slate gray family; F-gases in purple) ─────────
+  20: '#283747',  // Iron & steel             — dark steel blue
+  21: '#2e4057',  // Chemicals                — navy gray
+  22: '#566573',  // Cement                   — medium gray
+  23: '#85929e',  // Other manufacturing      — light gray
+  24: '#7d3c98',  // Industrial F-gases       — purple (matches L1 F-gas hue)
+
+  // ── L4: End-uses — Buildings (terra cotta / brick family) ─────────────────
+  25: '#873600',  // Residential (direct)     — dark brick
+  26: '#c0602d',  // Commercial (direct)      — lighter terra cotta
+
+  // ── L4: End-uses — Fuel Supply (dark navy family) ─────────────────────────
+  27: '#1a252f',  // Oil & gas operations     — very dark navy
+  28: '#2e4057',  // Coal mining              — dark navy-gray
+  29: '#4a5568',  // Refining                 — medium slate
+  30: '#6d7d8b',  // Other energy supply      — lighter slate
+
+  // ── L4: End-uses — Agriculture (green family, darkest = largest) ──────────
+  31: '#1a5c34',  // Enteric fermentation     — very dark green (biggest source)
+  32: '#196f3d',  // Manure management        — dark green
+  33: '#239b56',  // Rice cultivation         — medium green
+  34: '#52be80',  // Agricultural soils       — lighter green
+  35: '#82e0aa',  // Other agriculture        — lightest green
+
+  // ── L4: End-uses — Waste (olive / amber family) ───────────────────────────
+  36: '#7d6608',  // Landfills                — dark olive
+  37: '#9a7d0a',  // Wastewater               — medium olive
+  38: '#b7950b',  // Other waste              — amber
+
+  // ── L4: End-uses — Electricity (teal/blue family — "electricity" hue) ─────
+  39: '#0e7c6b',  // Buildings: heating & cooling      — dark teal
+  40: '#17a589',  // Buildings: lighting & appliances  — medium teal
+  41: '#0a6150',  // Industry: mfg & process elec.     — darker teal (largest)
+  42: '#1a5276',  // Data centers & ICT                — dark blue (tech)
+  43: '#154360',  // Transport: electrified            — deep navy blue
+  44: '#2e86c1'   // Other electricity use             — medium blue
+};
+
+// ── Build ECharts node and link arrays ────────────────────────────────────────
+const nodes = GHG_NODES.map(n => ({
+  name:      n.label,
+  depth:     n.depth,
+  itemStyle: { color: NODE_COLOR[n.id] },
+  label:     { position: n.depth === 3 ? 'left' : 'right' },
+  _node: n
+}));
+
+const links = GHG_LINKS.map(l => ({
+  source:    GHG_NODES[l.source].label,
+  target:    GHG_NODES[l.target].label,
+  value:     l.value,
+  _sourceId: l.source,
+  _targetId: l.target
+}));
+
+// ── ECharts init ──────────────────────────────────────────────────────────────
+const chart = echarts.init(document.getElementById('chart'), null, { renderer: 'svg' });
+
+chart.setOption({
+  backgroundColor: '#f9f9f9',
+
+  title: {
+    text: 'Global Greenhouse Gas Emissions — 2024 Estimate',
+    subtext: '~56 GtCO\u2082e annually  \u00b7  Gas types  \u2192  Emitting sectors  \u2192  Electricity generation  \u2192  End-use activities',
+    left:  '1%',
+    top:   '0.8%',
+    textStyle: {
+      fontSize:   15,
+      fontWeight: 'bold',
+      color:      '#111',
+      fontFamily: 'Arial, sans-serif'
+    },
+    subtextStyle: {
+      fontSize:   10.5,
+      color:      '#555',
+      fontFamily: 'Arial, sans-serif'
+    }
+  },
+
+  tooltip: { show: false },   // we use our own click card
+
+  series: [{
+    type:     'sankey',
+    layout:   'none',         // 'none' respects the depth property
+    left:     '1%',
+    right:    '22%',
+    top:      '11%',          // leaves room for title above
+    bottom:   '6%',           // leaves room for disclaimer bar below
+    orient:   'horizontal',
+    draggable: false,
+    nodeWidth: 16,
+    nodeGap:   8,
+    data:  nodes,
+    links: links,
+    emphasis: {
+      focus:     'adjacency',
+      lineStyle: { opacity: 0.6 }
+    },
+    label: {
+      fontSize:   10.5,
+      color:      '#222',
+      fontFamily: 'Arial, sans-serif'
+    },
+    lineStyle: {
+      color:     'source',    // flows take the color of their source node,
+      opacity:   0.30,        // making gas/sector lineage visually traceable
+      curveness: 0.5
+    },
+    levels: [
+      { depth: 0, lineStyle: { color: 'source', opacity: 0.30 } },
+      { depth: 1, lineStyle: { color: 'source', opacity: 0.30 } },
+      { depth: 2, lineStyle: { color: 'source', opacity: 0.30 } },
+      { depth: 3, lineStyle: { color: 'source', opacity: 0.30 } }
+    ]
+  }]
+});
+
+// ── Info card helpers ─────────────────────────────────────────────────────────
+const card    = document.getElementById('info-card');
+const icTitle = document.getElementById('ic-title');
+const icBody  = document.getElementById('ic-body');
+const hint    = document.getElementById('hint');
+
+function openCard(titleText, bodyHtml) {
+  icTitle.textContent = titleText;
+  icBody.innerHTML    = bodyHtml;
+  card.style.display  = 'block';
+  hint.style.opacity  = '0';
+}
+
+function nodeBody(n) {
+  return "<div class='ic-metric'>"
+    + "<strong>" + n.gtco2e.toFixed(2) + " GtCO\u2082e</strong>"
+    + "<span class='ic-pct'>\u00b7 " + n.pct.toFixed(1) + "% " + n.pctContext + "</span>"
+    + "</div>"
+    + "<div class='ic-section'>" + n.description + "</div>"
+    + "<div class='ic-section'><span class='ic-label'>Key activities: </span>" + n.activities + "</div>"
+    + "<div class='ic-section'><span class='ic-label'>Gases / GWP: </span>" + n.gases + "</div>"
+    + "<div class='ic-source'>" + n.notes + "</div>";
+}
+
+function linkBody(src, tgt, value) {
+  return "<div class='ic-metric'>"
+    + "<strong>" + value.toFixed(3) + " GtCO\u2082e</strong>"
+    + "<span class='ic-pct'>flow from " + src + " to " + tgt + "</span>"
+    + "</div>";
+}
+
+// ── Click handler ─────────────────────────────────────────────────────────────
+chart.on('click', function(params) {
+  if (params.dataType === 'node') {
+    const n = params.data._node;
+    openCard(n.fullName, nodeBody(n));
+  } else if (params.dataType === 'edge') {
+    const d = params.data;
+    openCard(d.source + ' \u2192 ' + d.target, linkBody(d.source, d.target, d.value));
+  }
+});
+
+document.getElementById('ic-close').addEventListener('click', function() {
+  card.style.display = 'none';
+});
+
+window.addEventListener('resize', function() { chart.resize(); });
+</script>
+</body>
+</html>
